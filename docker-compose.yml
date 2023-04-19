@@ -7,6 +7,10 @@ networks:
 volumes:
     traefik-acme:
         name: traefik-acme
+    prometheus_data:
+        name: prometheus_data
+    grafana_data:
+        name: grafana_data
 
 services:
 
@@ -30,9 +34,9 @@ services:
             - "--providers.docker.network=web_net"
             - "--entrypoints.http.address=:80"
             - "--entrypoints.https.address=:443"
-            #- "--metrics.prometheus=true"
-            #- "--entryPoints.metrics.address=:8082"
-            #- "--metrics.prometheus.entryPoints=metrics"
+            - "--metrics.prometheus=true"
+            - "--entryPoints.metrics.address=:8082"
+            - "--metrics.prometheus.entryPoint=metrics"
             #- "--certificatesresolvers.myresolver.acme.tlschallenge=true"
             #- "--certificatesresolvers.myresolver.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
             #- "--certificatesresolvers.myresolver.acme.email=postmaster@example.com"
@@ -65,3 +69,105 @@ services:
             - "traefik.http.services.traefik.loadbalancer.server.port=8080"
         networks:
         - web_net
+
+
+    prometheus:
+        image: "prom/prometheus:v2.43.0"
+        restart: always
+        container_name: "prometheus"
+        volumes:
+            - prometheus_data:/prometheus
+            - ./prometheus:/etc/prometheus
+        command:
+            - '--config.file=/etc/prometheus/prometheus.yml'
+            - '--storage.tsdb.path=/prometheus'
+            - '--storage.tsdb.retention.time=10d'
+            - '--storage.tsdb.retention.size=50GB'
+            - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+            - '--web.console.templates=/usr/share/prometheus/consoles'
+            - '--web.enable-lifecycle'
+        labels:
+              - "traefik.enable=true"
+              - "traefik.docker.network=web_net"
+              - "traefik.http.routers.prometheus.entrypoints=http"
+              - "traefik.http.routers.prometheus.rule=Host(`prometheus.arye.ir`)"
+              - "traefik.http.routers.prometheus.middlewares=https-redirect"
+              - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+              - "traefik.http.middlewares.web-auth.basicauth.users=arye:$$apr1$$9tK8pA6Q$$7Y88j7bJkBTgTrJjQN211."
+              
+              - "traefik.http.routers.prometheus-secure.entrypoints=https"
+              - "traefik.http.routers.prometheus-secure.rule=Host(`prometheus.arye.ir`)"
+              - "traefik.http.routers.prometheus-secure.middlewares=web-auth"
+              - "traefik.http.routers.prometheus-secure.tls=true"
+              - "traefik.http.routers.prometheus-secure.tls.options=default"
+              - "traefik.http.routers.prometheus-secure.tls.certresolver=mycert"
+              - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+        networks:
+            - web_net
+    
+    grafana:
+        image: "grafana/grafana:8.5.22"
+        container_name: "grafana"
+        restart: always
+        volumes:
+            - grafana_data:/var/lib/grafana
+            - ./grafana/:/etc/grafana/provisioning/
+        environment:
+            - GF_SECURITY_ADMIN_USER=${GRAFANA_USERNAME}
+            - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+            - GF_SMTP_ENABLED=true
+            - GF_SMTP_HOST=${SMTP_HOST}
+            - GF_SMTP_USER=${SMTP_USERNAME}
+            - GF_SMTP_PASSWORD=${SMTP_PASSWORD}
+            - GF_SMTP_FROM_ADDRESS=${SMTP_IDENTITY}
+            - GF_INSTALL_PLUGINS=${GRAFANA_INSTALL_PLUGINS}
+            - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+            - GF_PATHS_DATA=/var/lib/grafana
+        networks:
+            - web_net
+        labels:
+            - "traefik.enable=true"
+            - "traefik.docker.network=web_net"
+            - "traefik.http.routers.grafana.entrypoints=http"
+            - "traefik.http.routers.grafana.rule=Host(`grafana.arye.ir`)"
+            - "traefik.http.routers.grafana.middlewares=https-redirect"
+            - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+            #- "traefik.http.middlewares.web-auth.basicauth.users=arye:$$apr1$$9tK8pA6Q$$7Y88j7bJkBTgTrJjQN211."
+            
+            - "traefik.http.routers.grafana-secure.entrypoints=https"
+            - "traefik.http.routers.grafana-secure.rule=Host(`grafana.arye.ir`)"
+            #- "traefik.http.routers.grafana-secure.middlewares=web-auth"
+            - "traefik.http.routers.grafana-secure.tls=true"
+            - "traefik.http.routers.grafana-secure.tls.options=default"
+            - "traefik.http.routers.grafana-secure.tls.certresolver=mycert"
+            - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+    cadvisor:
+        image: google/cadvisor:v0.33.0
+        container_name: "cadvisor"
+        command: --disable_metrics=disk,udp,percpu
+        restart: always
+        hostname: 'ilia-pc'
+        volumes:
+            - /:/rootfs:ro
+            - /var/run:/var/run:rw
+            - /sys:/sys:ro
+            - /var/lib/docker/:/var/lib/docker:ro
+        networks: 
+            - web_net
+
+    node-exporter:
+        image: prom/node-exporter:v1.5.0
+        container_name: node-exporter
+        restart: unless-stopped
+        volumes:
+            - /proc:/host/proc:ro
+            - /sys:/host/sys:ro
+            - /:/rootfs:ro
+        command:
+            - '--path.procfs=/host/proc'
+            - '--path.rootfs=/rootfs'
+            - '--path.sysfs=/host/sys'
+            - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+        networks:
+            - web_net
